@@ -103,7 +103,6 @@ Common parameters:
 - Tools that use model quota accept `model`, `effort` and `strict_model`.
 - `gpt_ask`, `gpt_agent`, `gpt_computer_use`, `gpt_image` and `gpt_review` accept `background: true`. The call returns a `job_id` at once. Read the result with `gpt_jobs`.
 - `thread_id` continues an existing thread, including one started in the ChatGPT app.
-- Answers longer than `max_chars` (default 30000) are cut (the reply says "ANSWER CUT" and how much is missing). The full text is saved to `state/results/`.
 
 Default model and effort per tool (`DEFAULTS` in `server.py`):
 
@@ -140,7 +139,6 @@ The bridge creates `state/` next to `server.py` as needed. It is listed in `.git
 | `state/policy.json` | Optional. Overrides thresholds, for example `{"economy_5h": 70, "economy_week": 60, "stop_5h": 90, "stop_week": 85}`. |
 | `state/codex_off` | Optional. Kill switch: create an empty file to stop model calls. |
 | `state/delegations.jsonl` | Journal of model calls. |
-| `state/results/` | Full text of long answers. |
 | `state/limits.json`, `*.lock` | Shared rate-limit state, the remembered exhausted-limit time (`exhausted_until`) and file locks. |
 
 Two more folders are created next to `server.py` and are also ignored by git: `jobs/` (background job files, including their arguments and results) and `images/` (default output folder for `gpt_image`).

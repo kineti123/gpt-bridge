@@ -129,10 +129,6 @@ TIMEOUT_ASK = 300
 TIMEOUT_AGENT = 900
 MAX_RESULT_CHARS = 20000
 
-# Very long answers are cut: the beginning goes in the reply, the full text to a file. The limit is generous,
-# because a cut answer is easy to mistake for a complete one. What is shown is always max_chars, never less.
-ANSWER_LIMIT = 30000
-RESULTS_DIR = STATE_DIR / "results"
 JOURNAL = STATE_DIR / "delegations.jsonl"
 OFF_SWITCH = STATE_DIR / "codex_off"
 POLICY_FILE = STATE_DIR / "policy.json"
@@ -720,26 +716,8 @@ def limit_text(limit: dict) -> str:
     return "usage: " + ", ".join(parts) if parts else "usage unknown"
 
 
-def save_result(text: str, thread_id: str) -> Path:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = RESULTS_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{thread_id[-6:]}.md"
-    path.write_text(text, encoding="utf8")
-    return path
-
-
-def format_turn(result: dict, max_chars: int = ANSWER_LIMIT) -> str:
+def format_turn(result: dict) -> str:
     answer = result["answer"] or "(GPT returned no text)"
-    if len(answer) > max_chars:
-        path = save_result(answer, result["thread_id"])
-        total = len(answer)
-        head = answer[:max_chars]
-        cut = max(head.rfind("\n\n"), head.rfind("\n"))
-        if cut > max_chars * 0.8:  # cut at a paragraph or line boundary when it costs little
-            head = head[:cut]
-        answer = (
-            f"{head}\n\n[ANSWER CUT: this is {len(head)} of {total} characters, the rest is missing. "
-            f"Read the full text with the Read tool from {path} before relying on this answer, or call again with a larger max_chars.]"
-        )
     parts = [answer]
     if result["error"]:
         parts.append(f"Error: {result['error']}")
@@ -824,8 +802,7 @@ def gpt_ask(args: dict, cancel: threading.Event) -> str:
             cancel,
             images=args.get("images"),
             base_instructions=ASK_INSTRUCTIONS,
-        ),
-        args.get("max_chars", ANSWER_LIMIT),
+        )
     )
 
 
@@ -843,8 +820,7 @@ def gpt_agent(args: dict, cancel: threading.Event) -> str:
             sandbox=args.get("sandbox", "danger-full-access"),
             images=args.get("images"),
             auto_approve=args.get("auto_approve", True),
-        ),
-        args.get("max_chars", ANSWER_LIMIT),
+        )
     )
 
 
@@ -867,8 +843,7 @@ def gpt_computer_use(args: dict, cancel: threading.Event) -> str:
             cancel,
             sandbox="danger-full-access",
             auto_approve=True,
-        ),
-        args.get("max_chars", ANSWER_LIMIT),
+        )
     )
 
 
@@ -902,7 +877,7 @@ def gpt_search(args: dict, cancel: threading.Event) -> str:
     text = result["answer"] or "(search returned nothing)"
     if result["error"]:
         text += f"\n\nError: {result['error']}"
-    return clip(text, args.get("max_chars", 8000)) + f"\n\n[{limit_text(result['limit'])}]"
+    return text + f"\n\n[{limit_text(result['limit'])}]"
 
 
 def gpt_image(args: dict, cancel: threading.Event) -> str:
@@ -1227,7 +1202,6 @@ SA = {"type": "array", "items": S}
 MODEL = {"type": "string", "description": "Each tool has its own default (see gpt_status). gpt-6.1-terra is the main model, gpt-6.1-sol is for hard or high-stakes work, gpt-6-luna only for mechanical tasks, gpt-6-astra only on the user's request."}
 EFFORT = {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max", "ultra"], "description": "Not below medium; low only for a simple fact or a mechanical task, max and ultra only on the user's request."}
 STRICT = {"type": "boolean", "description": "Do not lower model and effort in economy mode. Only on the user's explicit request."}
-MAX_CHARS = {"type": "integer", "description": "How many characters of the answer to return, 30000 by default. Longer answers are cut, with a clear marker and a path to a file with the full text."}
 THREAD = {"type": "string", "description": "Continue this thread, including one started in the ChatGPT app. The value comes at the end of each answer; gpt_threads lists threads."}
 BACKGROUND = {"type": "boolean", "description": "Run in the background and return a job_id for gpt_jobs right away. For long tasks."}
 
@@ -1235,13 +1209,13 @@ TOOLS: List[Tuple[str, str, dict, Callable[[dict, threading.Event], str]]] = [
     (
         "gpt_ask",
         "Ask Codex: light mode without plugins, read-only. Read images from disk (images) only through this tool: recognize, describe, compare, check layout. Also for a second opinion and text analysis. Default: Terra medium.",
-        schema(["prompt"], prompt=S, model=MODEL, effort=EFFORT, strict_model=STRICT, thread_id=THREAD, images={**SA, "description": "Paths to local images"}, web_search={**B, "description": "Allow web search"}, max_chars=MAX_CHARS, background=BACKGROUND, timeout_sec=I),
+        schema(["prompt"], prompt=S, model=MODEL, effort=EFFORT, strict_model=STRICT, thread_id=THREAD, images={**SA, "description": "Paths to local images"}, web_search={**B, "description": "Allow web search"}, background=BACKGROUND, timeout_sec=I),
         gpt_ask,
     ),
     (
         "gpt_agent",
         "Full Codex agent with full access to the Mac: files, commands, code, skills, plugins, connectors, the built-in Codex browser (not signed in to accounts; for the real Chrome use gpt_computer_use), sub-agents, AGENTS.md. Connected apps are available. The thread is visible in the ChatGPT app. Default: Terra high; uses noticeably more than gpt_ask.",
-        schema(["task", "cwd"], task=S, cwd={**S, "description": "Task folder, required"}, sandbox={"type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"], "description": "Default: danger-full-access"}, model=MODEL, effort=EFFORT, strict_model=STRICT, thread_id=THREAD, images=SA, auto_approve={**B, "description": "Approve connector requests and site permissions in Chrome. Default: true."}, max_chars=MAX_CHARS, background=BACKGROUND, timeout_sec=I),
+        schema(["task", "cwd"], task=S, cwd={**S, "description": "Task folder, required"}, sandbox={"type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"], "description": "Default: danger-full-access"}, model=MODEL, effort=EFFORT, strict_model=STRICT, thread_id=THREAD, images=SA, auto_approve={**B, "description": "Approve connector requests and site permissions in Chrome. Default: true."}, background=BACKGROUND, timeout_sec=I),
         gpt_agent,
     ),
     (
@@ -1253,7 +1227,7 @@ TOOLS: List[Tuple[str, str, dict, Callable[[dict, threading.Event], str]]] = [
     (
         "gpt_search",
         "Web search or opening a page through Codex with web search: sources with URLs and excerpts. For a single fact, Claude has its own WebSearch. Default: Terra medium.",
-        schema([], query=S, url={**S, "description": "Open a page instead of searching"}, length={"type": "string", "enum": ["short", "medium", "long"]}, model=MODEL, effort=EFFORT, strict_model=STRICT, max_chars=I, timeout_sec=I),
+        schema([], query=S, url={**S, "description": "Open a page instead of searching"}, length={"type": "string", "enum": ["short", "medium", "long"]}, model=MODEL, effort=EFFORT, strict_model=STRICT, timeout_sec=I),
         gpt_search,
     ),
     (
@@ -1413,7 +1387,7 @@ class MCP:
 
 
 def selftest() -> int:
-    global OFF_SWITCH, RESULTS_DIR, STATE_DIR
+    global OFF_SWITCH, STATE_DIR
     import tempfile
 
     assert find_codex()
@@ -1448,9 +1422,9 @@ def selftest() -> int:
     assert credits("unknown", usage) is None
 
     # Kill switch, required agent folder and long answer to a file, in a temporary folder.
-    saved = OFF_SWITCH, RESULTS_DIR
+    saved = OFF_SWITCH
     temp = Path(tempfile.mkdtemp())
-    OFF_SWITCH, RESULTS_DIR = temp / "codex_off", temp / "results"
+    OFF_SWITCH = temp / "codex_off"
     try:
         OFF_SWITCH.touch()
         for name in ("gpt_ask", "gpt_agent", "gpt_image"):
@@ -1469,13 +1443,9 @@ def selftest() -> int:
             pass
         long = {"answer": "x" * 40000, "thread_id": "019a-test-abcdef", "error": "", "timed_out": False, "notes": [], "items": [], "model": TERRA, "effort": "medium", "mode": "normal", "status": "completed", "limit": week}
         text = format_turn(long)
-        files = list(RESULTS_DIR.glob("*-abcdef.md"))
-        assert 30000 <= len(text) < 31000 and "ANSWER CUT" in text and len(files) == 1 and files[0].read_text(encoding="utf8") == long["answer"], text[-200:]
-        assert 400 <= len(format_turn(long, 400)) < 1000
-        assert "ANSWER CUT" not in format_turn({**long, "answer": "y" * 29000})
-        assert "ANSWER CUT" in format_turn({**long, "answer": "z" * 12000}, 5000)
+        assert long["answer"] in text and "cut" not in text.lower(), text[-200:]
     finally:
-        OFF_SWITCH, RESULTS_DIR = saved
+        OFF_SWITCH = saved
         shutil.rmtree(temp, ignore_errors=True)
 
     bad_calls = (
