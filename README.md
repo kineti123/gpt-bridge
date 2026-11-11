@@ -1,5 +1,7 @@
 # gpt-bridge
 
+English | [Русский](README.ru.md)
+
 An MCP server that lets Claude Code hand tasks to Codex (OpenAI GPT models) through your ChatGPT subscription on macOS.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
