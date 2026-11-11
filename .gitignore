@@ -1,0 +1,16 @@
+# Runtime data of the bridge: journal, results, jobs, locks, own rules. Never publish.
+state/
+jobs/
+images/
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs and backups
+*.log
+*.bak
+*.bak-*
+
+# macOS
+.DS_Store
