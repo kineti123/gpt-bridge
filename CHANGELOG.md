@@ -5,7 +5,7 @@
 Fix: Claude sometimes received only a fraction of a Codex answer.
 
 - The answer limit is removed completely. `gpt_ask`, `gpt_agent`, `gpt_computer_use` and `gpt_search` always return the whole text. Before, an answer longer than `max_chars` (6000) was cut to its first 2500 characters, so a 12000-character answer arrived as about a fifth.
-- The `max_chars` parameter is gone from these tools, and `state/results/` is no longer written. `codex_rpc`, `codex_cli` and `codex_connector` keep their own `max_chars`: they return raw protocol data, not model answers.
+- No tool truncates its output any more. The `max_chars` parameter is removed everywhere (including `codex_rpc`, `codex_cli` and `codex_connector`), and `state/results/` is no longer written.
 
 ## 1.3.1
 

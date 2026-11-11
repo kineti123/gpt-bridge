@@ -127,7 +127,6 @@ BACKGROUND_TOOLS = ("gpt_ask", "gpt_agent", "gpt_computer_use", "gpt_image", "gp
 
 TIMEOUT_ASK = 300
 TIMEOUT_AGENT = 900
-MAX_RESULT_CHARS = 20000
 
 JOURNAL = STATE_DIR / "delegations.jsonl"
 OFF_SWITCH = STATE_DIR / "codex_off"
@@ -755,12 +754,6 @@ def describe_item(item: dict) -> str:
     return ""
 
 
-def clip(text: str, limit: int = MAX_RESULT_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n\n[truncated: showing {limit} of {len(text)} characters]"
-
-
 def tool_text(result: Any) -> str:
     """Extract text from an MCP tool result."""
     pieces: List[str] = []
@@ -983,7 +976,7 @@ def gpt_connector_list(args: dict, cancel: threading.Event) -> str:
                 lines.append(f"{status['name']} / {name}: {(tool.get('description') or '')[:140]}")
     if schema_for:
         return f"Tool {schema_for} not found."
-    return clip("\n".join(lines) or "Nothing found.")
+    return "\n".join(lines) or "Nothing found."
 
 
 def gpt_connector_call(args: dict, cancel: threading.Event) -> str:
@@ -995,7 +988,7 @@ def gpt_connector_call(args: dict, cancel: threading.Event) -> str:
     with AppServer(BASE_CONFIG, cancel, bool(args.get("auto_approve"))) as server:
         result = direct_call(server, target, tool, args.get("arguments") or {})
         notes = server.notes
-    return clip("\n".join([tool_text(result)] + notes), args.get("max_chars", MAX_RESULT_CHARS))
+    return "\n".join([tool_text(result)] + notes)
 
 
 def gpt_apps(args: dict, cancel: threading.Event) -> str:
@@ -1004,7 +997,7 @@ def gpt_apps(args: dict, cancel: threading.Event) -> str:
     with AppServer(BASE_CONFIG, cancel) as server:
         if query:
             # The same catalog the app shows, without calling the model's internal tool.
-            return clip(find_plugins(server.request("plugin/list", {}, timeout=120).get("marketplaces", []), query))
+            return find_plugins(server.request("plugin/list", {}, timeout=120).get("marketplaces", []), query)
         data = server.request("mcpServerStatus/list", {"limit": 50}, timeout=90).get("data", [])
     lines: List[str] = []
     for status in data:
@@ -1035,7 +1028,7 @@ def find_plugins(marketplaces: List[dict], query: str) -> str:
 
 def gpt_plugin_install(args: dict, cancel: threading.Event) -> str:
     done = subprocess.run([find_codex(), "plugin", "add", args["plugin"]], capture_output=True, text=True, timeout=180)
-    return clip((done.stdout + done.stderr).strip() or f"Exit code {done.returncode}")
+    return (done.stdout + done.stderr).strip() or f"Exit code {done.returncode}"
 
 
 def gpt_threads(args: dict, cancel: threading.Event) -> str:
@@ -1050,7 +1043,7 @@ def gpt_threads(args: dict, cancel: threading.Event) -> str:
                         lines.append(f"You: {text}")
                     elif item.get("type") == "agentMessage":
                         lines.append(f"GPT: {item.get('text', '')}")
-            return clip("\n\n".join(lines) or "Empty.")
+            return "\n\n".join(lines) or "Empty."
         params: Dict[str, Any] = {"limit": args.get("limit", 15)}
         if args.get("search"):
             params["searchTerm"] = args["search"]
@@ -1068,7 +1061,7 @@ def codex_rpc(args: dict, cancel: threading.Event) -> str:
             server.request("thread/resume", {"threadId": args["thread_id"]})
             params.setdefault("threadId", args["thread_id"])
         result = server.request(method, params, timeout=args.get("timeout_sec", 90))
-    return clip(json.dumps(result, ensure_ascii=False, indent=1), args.get("max_chars", MAX_RESULT_CHARS))
+    return json.dumps(result, ensure_ascii=False, indent=1)
 
 
 def codex_cli(args: dict, cancel: threading.Event) -> str:
@@ -1076,7 +1069,7 @@ def codex_cli(args: dict, cancel: threading.Event) -> str:
     if not command or command[0] not in ALLOWED_CLI:
         raise BridgeError(f"Only these subcommands are allowed: {', '.join(ALLOWED_CLI)}.")
     done = subprocess.run([find_codex()] + command, capture_output=True, text=True, timeout=args.get("timeout_sec", 180), stdin=subprocess.DEVNULL, cwd=args.get("cwd") or str(HERE))
-    return clip((done.stdout + done.stderr).strip() or f"Exit code {done.returncode}", args.get("max_chars", MAX_RESULT_CHARS))
+    return (done.stdout + done.stderr).strip() or f"Exit code {done.returncode}"
 
 
 def start_job(tool: str, args: dict) -> str:
@@ -1251,7 +1244,7 @@ TOOLS: List[Tuple[str, str, dict, Callable[[dict, threading.Event], str]]] = [
     (
         "gpt_connector_call",
         "Call a GPT connector tool directly, without a model. Uses no model quota.",
-        schema(["tool"], tool=S, server={**S, "description": "Default: codex_apps"}, arguments={"type": "object"}, auto_approve=B, max_chars=I),
+        schema(["tool"], tool=S, server={**S, "description": "Default: codex_apps"}, arguments={"type": "object"}, auto_approve=B),
         gpt_connector_call,
     ),
     (
@@ -1281,13 +1274,13 @@ TOOLS: List[Tuple[str, str, dict, Callable[[dict, threading.Event], str]]] = [
     (
         "codex_rpc",
         "Any Codex app-server protocol method, for everything the dedicated tools do not cover: skills/list, plugin/list, thread/goal/set, thread/fork, thread/rollback, thread/compact/start, thread/name/set, config/read, hooks/list, fs/*, account/usage/read and others. Turns start only through gpt_agent. Login and logout, paid and publishing methods, and thread deletion are blocked.",
-        schema(["method"], method=S, params={"type": "object"}, thread_id={**S, "description": "Load this thread first; needed for thread/* methods"}, max_chars=I, timeout_sec=I),
+        schema(["method"], method=S, params={"type": "object"}, thread_id={**S, "description": "Load this thread first; needed for thread/* methods"}, timeout_sec=I),
         codex_rpc,
     ),
     (
         "codex_cli",
         "Codex CLI commands: cloud (exec, list, status, diff, apply), apply, mcp, plugin, features, doctor, queue, archive, unarchive, debug. args is a list of words, for example [\"cloud\", \"list\"].",
-        schema(["args"], args=SA, cwd=S, max_chars=I, timeout_sec=I),
+        schema(["args"], args=SA, cwd=S, timeout_sec=I),
         codex_cli,
     ),
     (
@@ -1397,7 +1390,6 @@ def selftest() -> int:
     week = {"primary": {"usedPercent": 58, "windowDurationMins": 300}, "secondary": {"usedPercent": 18, "windowDurationMins": 10080}}
     assert limit_text(week) == "usage: 5h 58%, week 18%", limit_text(week)
     assert limit_text({}) == "usage unknown"
-    assert clip("abc", 2).startswith("ab\n")
     assert not BLOCKED_APPS
     assert REFUSAL.search("403 Forbidden: Cloudflare") and not REFUSAL.search("usage limit reached")
 
