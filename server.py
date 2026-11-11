@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO, Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-VERSION = "1.2.0"
+VERSION = "1.3.1"
 HERE = Path(__file__).resolve().parent
 DEFAULT_IMAGE_DIR = HERE / "images"
 JOBS_DIR = HERE / "jobs"
@@ -93,6 +93,15 @@ MAX_PARALLEL = 4
 COOLDOWN_SEC = 900
 # Errors that mean the server is rate limiting or rejecting requests: the bridge then pauses.
 REFUSAL = re.compile(r"cloudflare|cf-ray|just a moment|too many requests|\b429\b|unusual activity|suspicious activity", re.I)
+
+# The ChatGPT usage limit is used up. This is not a protection refusal but the normal end of a window.
+# The bridge remembers it until the reset so it does not make pointless calls.
+EXHAUSTED = re.compile(r"usage limit|hit your .{0,40}limit|out of credits", re.I)
+EXHAUSTED_FALLBACK_SEC = 1800  # reset time unknown: a short pause, then check again
+EXHAUSTED_MAX_SEC = 8 * 86400
+NEAR_FULL = 90  # a server refusal is attributed to a window filled at least this much
+RETRY_IN = re.compile(r"try again in\s+((?:\d+\s*(?:days?|hours?|hrs?|minutes?|mins?|seconds?|secs?)[\s,]*(?:and\s+)?)+)", re.I)
+BAN_KEYS = ("exhausted_until", "exhausted_source", "exhausted_seen")
 
 # codex_rpc exposes the whole app-server protocol, except methods that change login, spend
 # money, publish data or delete it permanently. turn/start and review/start go through
@@ -226,10 +235,122 @@ def note_refusal(text: str) -> None:
 # Model choice by usage, kill switch and journal
 
 
+def exhausted_until(limit: dict) -> float:
+    """When the exhausted limit resets (unix time), or 0 if some limit is left.
+
+    Exhausted means a window reached 100% or the server said so. Purchased credits extend the limit.
+    If the reset time is unknown, a short pause: the limit is read again when it ends.
+    """
+    credit = limit.get("credits") or {}
+    if credit.get("hasCredits") or credit.get("unlimited"):
+        return 0.0
+    now = time.time()
+    pause = now + EXHAUSTED_FALLBACK_SEC
+    windows = {name: limit.get(name) or {} for name in ("primary", "secondary")}
+
+    def reset_of(window: dict) -> float:
+        reset = window.get("resetsAt") or 0
+        if not reset:
+            return pause  # exhausted, but no reset time
+        return float(reset) if reset > now else 0.0  # the time has passed: the window has already reset
+
+    full = [reset_of(w) for w in windows.values() if (w.get("usedPercent") or 0) >= 100]
+    if any(full):
+        return max(full)
+    reached = str(limit.get("rateLimitReachedType") or "").lower()
+    if reached or limit.get("spendControlReached"):
+        for name, window in windows.items():
+            if name in reached:  # the server named the window: wait for that window's reset
+                return reset_of(window) or pause
+        return pause
+    return 0.0
+
+
+def retry_after(text: str) -> float:
+    """Seconds from "try again in 3 hours 12 minutes" in a refusal text. 0 means no time was given."""
+    found = RETRY_IN.search(text or "")
+    if not found:
+        return 0.0
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    return float(sum(int(amount) * units[unit[0].lower()] for amount, unit in re.findall(r"(\d+)\s*([a-z])", found.group(1), re.I)))
+
+
+def window_reset(seen: dict, limit: dict) -> bool:
+    """A fresh reading shows that, after a server refusal, the window has reset or credits appeared."""
+    credit = limit.get("credits") or {}
+    if credit.get("hasCredits") or credit.get("unlimited"):
+        return True
+    for name in ("primary", "secondary"):
+        old, new = seen.get(name) or {}, limit.get(name) or {}
+        if old.get("resetsAt") and new.get("resetsAt") and new["resetsAt"] > old["resetsAt"] + 60:
+            return True
+        if (old.get("usedPercent") or 0) - (new.get("usedPercent") or 0) >= 20:
+            return True
+    return False
+
+
 def remember_limit(limit: dict) -> None:
-    if limit:
-        with shared_state() as data:
-            data["last_limit"] = {**limit, "at": time.time()}
+    if not limit:
+        return
+    now = time.time()
+    until = exhausted_until(limit)
+    with shared_state() as data:
+        data["last_limit"] = {**limit, "at": now}
+        refused = data.get("exhausted_until", 0) if data.get("exhausted_source") == "refusal" else 0
+        if refused > now and not window_reset(data.get("exhausted_seen") or {}, limit):
+            # The server refused at less than 100%: the same reading does not lift the block, only a window reset.
+            data["exhausted_until"] = max(refused, until)
+        elif until > now:
+            data["exhausted_until"] = until
+            data["exhausted_source"] = "measure"
+            data.pop("exhausted_seen", None)
+        else:
+            # A fresh server answer beats memory: the limit reset or was topped up, so work again.
+            for key in BAN_KEYS:
+                data.pop(key, None)
+
+
+def note_exhausted(text: str) -> None:
+    """The server refused because of the limit although the percentages did not reach 100.
+
+    The time comes from the refusal text; otherwise from the nearest reset of a nearly full window; otherwise a short pause.
+    One extra attempt after the reset is better than a block until the weekly reset caused by the five-hour window.
+    """
+    if not text or not EXHAUSTED.search(text):
+        return
+    now = time.time()
+    wait = retry_after(text)
+    with shared_state() as data:
+        limit = data.get("last_limit") or {}
+        windows = {name: limit.get(name) or {} for name in ("primary", "secondary")}
+        if wait:
+            until = now + wait + 60
+        else:
+            near = [w["resetsAt"] for w in windows.values() if (w.get("usedPercent") or 0) >= NEAR_FULL and (w.get("resetsAt") or 0) > now]
+            until = min(near) if near else now + EXHAUSTED_FALLBACK_SEC
+        current = data.get("exhausted_until", 0)
+        data["exhausted_until"] = min(max(until, current if current > now else 0), now + EXHAUSTED_MAX_SEC)
+        data["exhausted_source"] = "refusal"
+        data["exhausted_seen"] = {name: {"resetsAt": w.get("resetsAt"), "usedPercent": w.get("usedPercent")} for name, w in windows.items()}
+
+
+def forget_exhausted() -> None:
+    """Manual unblock: server.py --unblock."""
+    with shared_state() as data:
+        for key in BAN_KEYS:
+            data.pop(key, None)
+
+
+def blocked_until() -> float:
+    """Until when the bridge remembers the exhausted limit. 0 means work is possible."""
+    with shared_state() as data:
+        until = data.get("exhausted_until", 0)
+    return until if until > time.time() else 0.0
+
+
+def when(stamp: float) -> str:
+    moment = datetime.fromtimestamp(stamp)
+    return moment.strftime("%H:%M" if moment.date() == datetime.now().date() else "%d.%m %H:%M")
 
 
 def cached_limit(max_age: float = 900) -> dict:
@@ -277,10 +398,22 @@ def choose(tool: str, args: dict, limit: dict) -> Tuple[str, str, str]:
     return model, effort, mode
 
 
+def stop_if_exhausted() -> None:
+    until = blocked_until()
+    if until:
+        raise BridgeError(
+            f"ChatGPT usage limit is used up until {when(until)}. Do not call Codex before the reset: do the task yourself "
+            "or use another helper, and do not silently replace required routes (images, apps, logged-in sites). "
+            "The bridge turns itself back on after the reset; to check earlier, call gpt_status."
+        )
+
+
 def check_call(name: str, args: dict) -> None:
     """Checks before a run, including before a background job: otherwise its error shows up only in gpt_jobs."""
     if name in MODEL_TOOLS and OFF_SWITCH.exists():
         raise BridgeError(f"Codex is switched off by the file {OFF_SWITCH}. Do the task yourself; to turn it back on, delete the file.")
+    if name in MODEL_TOOLS:
+        stop_if_exhausted()
     if name == "gpt_agent" and not os.path.isdir(args.get("cwd") or ""):
         raise BridgeError("cwd is required: an existing task folder. Without it, Codex would work in the bridge folder.")
 
@@ -460,6 +593,7 @@ class AppServer:
                 if "error" in message:
                     text = str(message["error"].get("message"))
                     note_refusal(text)
+                    note_exhausted(text)
                     raise BridgeError(f"{method}: {text}")
                 return message.get("result")
         raise BridgeError(f"{method}: no response within {int(timeout)} s")
@@ -513,6 +647,7 @@ def run_turn(
     thread_id = args.get("thread_id", "")
     with AppServer(config, cancel, auto_approve) as server:
         before = cached_limit() or read_limit(server)
+        stop_if_exhausted()  # a fresh reading may just have shown exhaustion: do not start the turn
         model, effort, mode = choose(tool, args, before)
         settings: Dict[str, Any] = {"approvalPolicy": ASK_BRIDGE if auto_approve else "never", "sandbox": sandbox, "model": model}
         if cwd:
@@ -556,6 +691,7 @@ def run_turn(
             "usage": usage,
             "limit": read_limit(server),
         }
+    note_exhausted(error)  # after read_limit: a fresh limit may have erased the memory, but the refusal just happened
     log_delegation(tool, result, before, time.time() - started)
     return result
 
@@ -821,6 +957,8 @@ def gpt_review(args: dict, cancel: threading.Event) -> str:
                 review = item["review"]
             elif item.get("type") == "agentMessage" and not review:
                 review = item.get("text", "")
+        error = (final.get("error") or {}).get("message", "") if final else ""
+        note_refusal(error)
         result = {
             "thread_id": thread["id"],
             "model": model,
@@ -828,10 +966,12 @@ def gpt_review(args: dict, cancel: threading.Event) -> str:
             "mode": mode,
             "answer": review,
             "status": final.get("status", "interrupted"),
+            "error": error,
             "timed_out": timed_out,
             "usage": usage,
             "limit": read_limit(server),
         }
+    note_exhausted(error)  # a limit refusal at the end of a review is remembered like in a normal turn
     log_delegation("gpt_review", result, before, time.time() - started)
     tail = f"[thread_id={thread['id']} | {model} {effort}{mode_text(mode)} | {result['status']} | {limit_text(result['limit'])}]"
     return f"{review or '(GPT returned no review)'}\n\n{tail}"
@@ -1036,12 +1176,14 @@ def gpt_status(args: dict, cancel: threading.Event) -> str:
         caps = server.request("modelProvider/capabilities/read")
     plan = limits.get("planType", "unknown")
     policy = load_policy()
+    blocked = blocked_until()
     lines = [
         f"Plan: {plan}",
         f"Usage: {limit_text(limits)}",
         f"Mode: {mode_for(limits)} (economy from {policy['economy_5h']}% in 5h or {policy['economy_week']}% in a week, "
         f"stop from {policy['stop_5h']}% or {policy['stop_week']}%; edit: {POLICY_FILE})",
         "Kill switch: " + (f"Codex is off ({OFF_SWITCH})" if OFF_SWITCH.exists() else "off, routing works"),
+        "Limit: " + (f"used up until {when(blocked)}; the bridge refuses at once until the reset (clear by hand: server.py --unblock)" if blocked else "available"),
         "Defaults: " + ", ".join(f"{tool[4:]} {model.replace('gpt-', '')} {effort}" for tool, (model, effort) in DEFAULTS.items()),
         journal_today(),
         "Models: " + ", ".join(m["id"] + (" (default)" if m.get("isDefault") else "") for m in models if not m.get("hidden")),
@@ -1262,7 +1404,7 @@ class MCP:
 
 
 def selftest() -> int:
-    global OFF_SWITCH, RESULTS_DIR
+    global OFF_SWITCH, RESULTS_DIR, STATE_DIR
     import tempfile
 
     assert find_codex()
@@ -1342,6 +1484,72 @@ def selftest() -> int:
         raise AssertionError("block did not work")
     except BridgeError:
         pass
+
+    # Exhausted limit: the bridge remembers it until the reset, refuses at once and lifts the block itself.
+    saved_state = STATE_DIR
+    STATE_DIR = Path(tempfile.mkdtemp())
+    try:
+        soon, later = time.time() + 3600, time.time() + 86400
+        blocked = lambda: blocked_until()
+        assert exhausted_until(week) == 0
+        assert exhausted_until({"primary": {"usedPercent": 100, "resetsAt": soon}, "secondary": {"usedPercent": 40, "resetsAt": later}}) == soon
+        assert exhausted_until({"primary": {"usedPercent": 100, "resetsAt": soon}, "secondary": {"usedPercent": 100, "resetsAt": later}}) == later
+        assert exhausted_until({"primary": {"usedPercent": 100, "resetsAt": soon}, "credits": {"hasCredits": True}}) == 0
+        assert exhausted_until({"primary": {"usedPercent": 80, "resetsAt": soon}, "rateLimitReachedType": "primary"}) == soon
+        # The server named the weekly window: wait for it, not for the nearest reset.
+        assert exhausted_until({"primary": {"usedPercent": 50, "resetsAt": soon}, "secondary": {"usedPercent": 99, "resetsAt": later}, "rateLimitReachedType": "secondary"}) == later
+        # Window not named or no reset time: a short pause, not "limit available".
+        for unknown in ({"primary": {"usedPercent": 100}}, {"primary": {"usedPercent": 80, "resetsAt": soon}, "rateLimitReachedType": "workspace"}, {"spendControlReached": True}):
+            assert 0 < exhausted_until(unknown) - time.time() <= EXHAUSTED_FALLBACK_SEC, unknown
+        assert exhausted_until({"primary": {"usedPercent": 100, "resetsAt": time.time() - 5}}) == 0  # the time has passed
+        assert EXHAUSTED.search("You've hit your usage limit. Try again in 3 hours.") and EXHAUSTED.search("You've hit your 5-hour limit")
+        assert not EXHAUSTED.search("403 Forbidden") and not EXHAUSTED.search("context length limit reached")
+        assert retry_after("Try again in 3 hours 12 minutes.") == 3 * 3600 + 720 and retry_after("try again in 2 days") == 172800
+        assert retry_after("try again later") == 0
+        check_call("gpt_ask", {})
+        remember_limit({"primary": {"usedPercent": 100, "resetsAt": soon}, "secondary": {"usedPercent": 40, "resetsAt": later}})
+        assert blocked() == soon
+        for name in ("gpt_ask", "gpt_search", "gpt_image"):
+            try:
+                check_call(name, {})
+                raise AssertionError(f"exhausted limit did not stop: {name}")
+            except BridgeError as error:
+                assert "used up" in str(error)
+        check_call("gpt_status", {})
+        remember_limit({"primary": {"usedPercent": 3, "resetsAt": soon}})  # a fresh limit lifts the block by measurement
+        assert blocked() == 0
+        check_call("gpt_ask", {})
+        # A server refusal before 100%: remember until the nearly full window resets.
+        almost = {"primary": {"usedPercent": 96, "resetsAt": soon}, "secondary": {"usedPercent": 50, "resetsAt": later}}
+        remember_limit(almost)
+        note_exhausted("stream error: You've hit your usage limit")
+        assert blocked() == soon
+        remember_limit(almost)  # the same reading (gpt_status, a parallel call) does not lift the block
+        assert blocked() == soon
+        remember_limit({"primary": {"usedPercent": 2, "resetsAt": soon + 18000}, "secondary": {"usedPercent": 51, "resetsAt": later}})  # the window has reset
+        assert blocked() == 0
+        # Both windows nearly full: wait for the nearest reset, not the weekly one.
+        remember_limit({"primary": {"usedPercent": 96, "resetsAt": soon}, "secondary": {"usedPercent": 99, "resetsAt": later}})
+        note_exhausted("You've hit your usage limit")
+        assert blocked() == soon
+        forget_exhausted()
+        assert blocked() == 0
+        # The time is named in the refusal text.
+        note_exhausted("You've hit your usage limit. Try again in 2 hours 5 minutes.")
+        assert abs(blocked() - (time.time() + 7500 + 60)) < 5
+        forget_exhausted()
+        # Nothing is known: a short pause.
+        remember_limit({"primary": {"usedPercent": 100, "resetsAt": time.time() - 5}})
+        assert blocked() == 0
+        note_exhausted("usage limit reached")
+        assert 0 < blocked() - time.time() <= EXHAUSTED_FALLBACK_SEC
+        note_exhausted("context length limit reached")  # not about the subscription limit
+        forget_exhausted()
+        note_exhausted("context length limit reached")
+        assert blocked() == 0
+    finally:
+        shutil.rmtree(STATE_DIR, ignore_errors=True)
+        STATE_DIR = saved_state
     server = AppServer(LIGHT_CONFIG)
     assert read_limit(server).get("planType")
     server.close()
@@ -1351,6 +1559,10 @@ def selftest() -> int:
 
 def main() -> int:
     argv = sys.argv[1:]
+    if argv[:1] == ["--unblock"]:
+        forget_exhausted()
+        print("Memory of the exhausted limit cleared.")
+        return 0
     if argv[:1] == ["--selftest"]:
         return selftest()
     if argv[:1] == ["--job"]:

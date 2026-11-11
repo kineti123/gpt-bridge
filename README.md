@@ -124,6 +124,7 @@ Claude Code decides what to send to Codex. The bridge adds guard rails:
 - **Kill switch.** While the file `state/codex_off` exists, every tool that uses model quota refuses to run. Delete the file to turn it back on.
 - **Journal.** Each model call adds one line to `state/delegations.jsonl`: time, tool, model, effort, mode, thread ID, status, duration, token counts, estimated credits, usage before and after, and answer length. Prompts and answers are not written to the journal.
 - **Rate limits** (`LIMITS`, `MAX_PARALLEL`), shared by all bridge processes: at most 12 Codex starts per minute, 4 Codex processes at once, and 60 direct connector calls per hour.
+- **Exhausted limit.** When a usage window reaches 100% (or the server says the limit is reached, or a turn fails with a usage-limit error), the bridge remembers the reset time and refuses model tools at once, without starting Codex. It turns itself back on after the reset. `gpt_status`, `gpt_jobs` and `gpt_threads` keep working. If the window is not named or the reset time is unknown, the bridge pauses for 30 minutes and checks again. Credits on the account mean the limit is not exhausted. Clear the block by hand with `python3 server.py --unblock`.
 - **Cooldown.** If an error mentions Cloudflare, HTTP 429, "too many requests" or "unusual activity", the bridge pauses for 15 minutes. Delete `state/limits.json` to clear the pause early.
 - Inside Codex runs started by the bridge, the bridge's own MCP server is disabled, so Codex cannot call Codex in a loop.
 
@@ -140,7 +141,7 @@ The bridge creates `state/` next to `server.py` as needed. It is listed in `.git
 | `state/codex_off` | Optional. Kill switch: create an empty file to stop model calls. |
 | `state/delegations.jsonl` | Journal of model calls. |
 | `state/results/` | Full text of long answers. |
-| `state/limits.json`, `*.lock` | Shared rate-limit state and file locks. |
+| `state/limits.json`, `*.lock` | Shared rate-limit state, the remembered exhausted-limit time (`exhausted_until`) and file locks. |
 
 Two more folders are created next to `server.py` and are also ignored by git: `jobs/` (background job files, including their arguments and results) and `images/` (default output folder for `gpt_image`).
 
@@ -183,6 +184,7 @@ What you should know:
 |---|---|
 | `Codex not found` | Install ChatGPT.app in `/Applications`, put `codex` on `PATH`, or set `GPT_BRIDGE_CODEX`. |
 | Bridge is paused until a time | OpenAI or Cloudflare refused a request. Wait, or delete `state/limits.json`. |
+| `ChatGPT usage limit is used up until ...` | Your plan's usage window is exhausted. The bridge turns itself back on after the reset. To clear it early, run `gpt_status` (it clears the block if the window really reset) or `python3 server.py --unblock`. |
 | Bridge rate limit reached | More than 12 Codex starts per minute or 60 connector calls per hour. Wait and retry. |
 | 4 Codex processes already running | Wait, or cancel a background job with `gpt_jobs` and `cancel: true`. |
 | Codex is switched off | Delete `state/codex_off`. |

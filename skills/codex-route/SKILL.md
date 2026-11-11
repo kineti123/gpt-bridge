@@ -95,5 +95,6 @@ Do not do the work twice and do not rewrite Codex's answer wholesale. Codex's an
 ## If Codex is unavailable
 
 - `state/codex_off` exists: routing is off; do the work yourself.
+- Usage limit used up: since bridge 1.3.0 it remembers this until the reset and answers "ChatGPT usage limit is used up until HH:MM" without starting Codex. After the reset it turns itself back on. Do not call or probe Codex before then; `gpt_status` lifts the block early only if the window really reset, or the user runs `python3 server.py --unblock`.
 - Bridge pause, usage limit, or stop mode: do the economy routes yourself and write one line: "Codex is paused until HH:MM, doing it myself". Required routes (images, generation, GUI): do not silently replace them. Say when the limit resets and offer to wait or a fallback.
 - The model refused a CAPTCHA, sign-in or payment: tell the user what to do by hand. Do not set up workarounds.
