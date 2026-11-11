@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.2
+
+Fix: Claude sometimes received only a fraction of a Codex answer.
+
+- A long answer was cut to the first 2500 characters whenever it exceeded `max_chars`, even if `max_chars` was set much higher (a 12000-character answer arrived as about a fifth). Now the reply shows up to `max_chars` characters, cut at a paragraph boundary.
+- The default `max_chars` is raised from 6000 to 30000, so ordinary answers are no longer cut.
+- A cut answer ends with an explicit `ANSWER CUT` marker with the shown and total sizes and the path to the full text, so it cannot be mistaken for a complete answer.
+- `gpt_computer_use` now accepts `max_chars` like the other tools.
+
 ## 1.3.1
 
 Refinements to the exhausted-limit memory, from a Codex review of 1.3.0.

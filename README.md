@@ -103,7 +103,7 @@ Common parameters:
 - Tools that use model quota accept `model`, `effort` and `strict_model`.
 - `gpt_ask`, `gpt_agent`, `gpt_computer_use`, `gpt_image` and `gpt_review` accept `background: true`. The call returns a `job_id` at once. Read the result with `gpt_jobs`.
 - `thread_id` continues an existing thread, including one started in the ChatGPT app.
-- Answers longer than `max_chars` (default 6000) return only the beginning. The full text is saved to `state/results/`.
+- Answers longer than `max_chars` (default 30000) are cut (the reply says "ANSWER CUT" and how much is missing). The full text is saved to `state/results/`.
 
 Default model and effort per tool (`DEFAULTS` in `server.py`):
 

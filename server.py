@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO, Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 HERE = Path(__file__).resolve().parent
 DEFAULT_IMAGE_DIR = HERE / "images"
 JOBS_DIR = HERE / "jobs"
@@ -129,9 +129,9 @@ TIMEOUT_ASK = 300
 TIMEOUT_AGENT = 900
 MAX_RESULT_CHARS = 20000
 
-# Do not flood Claude's context with a long GPT answer: the beginning goes in the reply, the full text to a file.
-ANSWER_LIMIT = 6000
-ANSWER_HEAD = 2500
+# Very long answers are cut: the beginning goes in the reply, the full text to a file. The limit is generous,
+# because a cut answer is easy to mistake for a complete one. What is shown is always max_chars, never less.
+ANSWER_LIMIT = 30000
 RESULTS_DIR = STATE_DIR / "results"
 JOURNAL = STATE_DIR / "delegations.jsonl"
 OFF_SWITCH = STATE_DIR / "codex_off"
@@ -731,7 +731,15 @@ def format_turn(result: dict, max_chars: int = ANSWER_LIMIT) -> str:
     answer = result["answer"] or "(GPT returned no text)"
     if len(answer) > max_chars:
         path = save_result(answer, result["thread_id"])
-        answer = f"{answer[:min(ANSWER_HEAD, max_chars)]}\n\n[answer is longer than {max_chars} characters: showing the beginning; full text ({len(answer)} characters) in {path}]"
+        total = len(answer)
+        head = answer[:max_chars]
+        cut = max(head.rfind("\n\n"), head.rfind("\n"))
+        if cut > max_chars * 0.8:  # cut at a paragraph or line boundary when it costs little
+            head = head[:cut]
+        answer = (
+            f"{head}\n\n[ANSWER CUT: this is {len(head)} of {total} characters, the rest is missing. "
+            f"Read the full text with the Read tool from {path} before relying on this answer, or call again with a larger max_chars.]"
+        )
     parts = [answer]
     if result["error"]:
         parts.append(f"Error: {result['error']}")
@@ -859,7 +867,8 @@ def gpt_computer_use(args: dict, cancel: threading.Event) -> str:
             cancel,
             sandbox="danger-full-access",
             auto_approve=True,
-        )
+        ),
+        args.get("max_chars", ANSWER_LIMIT),
     )
 
 
@@ -1218,7 +1227,7 @@ SA = {"type": "array", "items": S}
 MODEL = {"type": "string", "description": "Each tool has its own default (see gpt_status). gpt-6.1-terra is the main model, gpt-6.1-sol is for hard or high-stakes work, gpt-6-luna only for mechanical tasks, gpt-6-astra only on the user's request."}
 EFFORT = {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max", "ultra"], "description": "Not below medium; low only for a simple fact or a mechanical task, max and ultra only on the user's request."}
 STRICT = {"type": "boolean", "description": "Do not lower model and effort in economy mode. Only on the user's explicit request."}
-MAX_CHARS = {"type": "integer", "description": "How many characters of the answer to return, 6000 by default. Longer answers return the beginning and a path to a file with the full text."}
+MAX_CHARS = {"type": "integer", "description": "How many characters of the answer to return, 30000 by default. Longer answers are cut, with a clear marker and a path to a file with the full text."}
 THREAD = {"type": "string", "description": "Continue this thread, including one started in the ChatGPT app. The value comes at the end of each answer; gpt_threads lists threads."}
 BACKGROUND = {"type": "boolean", "description": "Run in the background and return a job_id for gpt_jobs right away. For long tasks."}
 
@@ -1458,11 +1467,13 @@ def selftest() -> int:
             raise AssertionError("gpt_agent passed without a folder")
         except BridgeError:
             pass
-        long = {"answer": "x" * 7000, "thread_id": "019a-test-abcdef", "error": "", "timed_out": False, "notes": [], "items": [], "model": TERRA, "effort": "medium", "mode": "normal", "status": "completed", "limit": week}
+        long = {"answer": "x" * 40000, "thread_id": "019a-test-abcdef", "error": "", "timed_out": False, "notes": [], "items": [], "model": TERRA, "effort": "medium", "mode": "normal", "status": "completed", "limit": week}
         text = format_turn(long)
         files = list(RESULTS_DIR.glob("*-abcdef.md"))
-        assert len(text) < 3000 and len(files) == 1 and files[0].read_text(encoding="utf8") == long["answer"], text[-200:]
-        assert len(format_turn(long, 400)) < 800
+        assert 30000 <= len(text) < 31000 and "ANSWER CUT" in text and len(files) == 1 and files[0].read_text(encoding="utf8") == long["answer"], text[-200:]
+        assert 400 <= len(format_turn(long, 400)) < 1000
+        assert "ANSWER CUT" not in format_turn({**long, "answer": "y" * 29000})
+        assert "ANSWER CUT" in format_turn({**long, "answer": "z" * 12000}, 5000)
     finally:
         OFF_SWITCH, RESULTS_DIR = saved
         shutil.rmtree(temp, ignore_errors=True)

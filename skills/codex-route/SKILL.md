@@ -85,7 +85,7 @@ Do not do the work twice and do not rewrite Codex's answer wholesale. Codex's an
 ## Bridge mechanics
 
 - `gpt_agent` needs `cwd` (the task folder). Full access and connector approvals are on by default.
-- Answers longer than 6000 characters: the reply has the beginning and a path to the full text in `state/results/`. `max_chars` changes the limit.
+- Answers longer than 30000 characters: the reply has the beginning and a path to the full text in `state/results/`. `max_chars` changes the limit.
 - Codex asked a follow-up question: answer in the next call with the same `thread_id`. Timeout: continue the same thread; start over at most once.
 - A related follow-up uses the same `thread_id`; a new task gets a new thread.
 - A long task you wait for in this session: run `python3 /path/to/gpt-bridge/server.py --call gpt_agent '<json>'` as a background shell command, so you are woken when it ends, without polling. If the session may close: `background: true`, then read the result with `gpt_jobs`.
