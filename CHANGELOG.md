@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Claude Code skills `codex-route` and `codex-helpers` in `skills/`.
+- Example SessionStart hook in `examples/session-start-hook.json`.
+
 ## 1.2.0
 
 - Default model and effort for every tool (`DEFAULTS`). Without them Codex would use its own default from `~/.codex/config.toml`.

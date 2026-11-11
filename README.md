@@ -59,6 +59,25 @@ Then ask Claude Code in plain words, for example "ask Codex to review this diff"
 
 The model names in `DEFAULTS` (`gpt-6.1-terra`, `gpt-6.1-sol`) are the ones the author's account offers. Run `gpt_status` and change them in `server.py` if your account lists different models.
 
+## Claude Code skills
+
+The MCP server gives Claude Code the tools. The skills in `skills/` teach it how to use them well. Claude Code loads a skill only when the task matches its description.
+
+| Skill | What it covers |
+|---|---|
+| `codex-route` | When to hand work to Codex and when to do it yourself, which tool and model fit each task, the brief format, how to accept the result, what to do when Codex is paused. |
+| `codex-helpers` | Bringing Codex in on Claude's own initiative: fresh web results, images, second opinions, sites Claude cannot open, and splitting big research jobs between Claude agents and Codex. |
+
+Install them for your user:
+
+```bash
+mkdir -p ~/.claude/skills && cp -R /path/to/gpt-bridge/skills/* ~/.claude/skills/
+```
+
+Optional: load the routing rules at the start of every session, not only when the skill triggers. Merge `examples/session-start-hook.json` into `~/.claude/settings.json`. The hook prints the body of `codex-route/SKILL.md` into the session context.
+
+The skills, `examples/rules.md` and the hook overlap on purpose. `rules.md` is short and always loaded as server instructions. The skills hold the details. Edit all of them to match your own workflow and the model names your account offers.
+
 ## Tools
 
 | Tool | What it does | Uses model quota |

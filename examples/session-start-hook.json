@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "awk 'n>=2{print} /^---$/{n++}' ~/.claude/skills/codex-route/SKILL.md 2>/dev/null"
+          }
+        ]
+      }
+    ]
+  }
+}
